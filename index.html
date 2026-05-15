@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>ASICS x Vietnam Party Quiz V2</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
+
+  <style>
+    :root{--asics:#001E62;--yellow:#FACC15;--red:#DC2626;--green:#22C55E;}
+    *{box-sizing:border-box;font-family:'Noto Sans JP',system-ui,sans-serif;-webkit-tap-highlight-color:transparent}
+    body{min-height:100vh;margin:0;color:#fff;background:linear-gradient(135deg,rgba(0,30,98,.97),rgba(0,12,45,.99)),repeating-linear-gradient(45deg,rgba(255,255,255,.09) 0,rgba(255,255,255,.09) 2px,transparent 2px,transparent 20px);overflow-x:hidden}
+    .speed-bg{background:linear-gradient(135deg,rgba(0,30,98,.97),rgba(0,12,45,.99)),repeating-linear-gradient(45deg,rgba(255,255,255,.09) 0,rgba(255,255,255,.09) 2px,transparent 2px,transparent 20px)}
+    .glass{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.18);backdrop-filter:blur(14px);box-shadow:0 24px 80px rgba(0,0,0,.24)}
+    .btn{transition:transform .12s ease,opacity .12s ease,box-shadow .12s ease}.btn:active{transform:scale(.97)}.btn:disabled{opacity:.55;cursor:not-allowed}
+    .fade{animation:fade .22s ease both}@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+    .pulse{animation:pulse 1.6s infinite}@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(250,204,21,.55)}70%{box-shadow:0 0 0 22px rgba(250,204,21,0)}100%{box-shadow:0 0 0 0 rgba(250,204,21,0)}}
+    .qr-box canvas,.qr-box img{margin:auto;border-radius:16px}.opt{min-height:84px}.safe-bottom{padding-bottom:env(safe-area-inset-bottom)}
+    .icon svg{display:inline-block;vertical-align:middle}.rank1{background:#FACC15;color:#001E62}.rankN{background:#fff;color:#001E62}
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="toast" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-white text-[#001E62] font-black rounded-full px-6 py-3 shadow-2xl"></div>
+
+<script>
+'use strict';
+
+const BROKER_URL = 'wss://broker.emqx.io:8084/mqtt';
+const TOPIC_PREFIX = 'partyquiz/asics-vietnam-v2';
+const ASICS_LOGO = 'https://upload.wikimedia.org/wikipedia/commons/b/b1/Asics_Logo.svg';
+const MAX_WRONG = 5;
+
+const QUESTIONS = [
+  { q:'ASICSの前身である鬼塚株式会社が1950年に発売した、最初のスポーツシューズは何でしょう？', options:['ランニングシューズ','バスケットボールシューズ','バレーボールシューズ','サッカーシューズ'], correct:1, time:20 },
+  { q:'1986年、ASICSで初めてGELテクノロジーを搭載したシューズはどれでしょう？', options:['GT-II','GEL-KAYANO','TARTHER','MEXICO 66'], correct:0, time:20 },
+  { q:'ASICSを象徴するサイドのラインは、当時どのように呼ばれていたでしょう？', options:['ジャパンライン','スピードライン','メキシコライン','オリンピックライン'], correct:2, time:20 },
+  { q:'初代GEL-KAYANOのデザインは、どの昆虫から着想を得たと言われているでしょう？', options:['トンボ','カブトムシ','クワガタムシ','チョウ'], correct:2, time:20 },
+  { q:'ブランド名「ASICS」の由来となったラテン語の言葉に関係する、古代ローマの詩人は誰でしょう？', options:['ウェルギリウス','ホラティウス','オウィディウス','ユウェナリス'], correct:3, time:20 },
+  { q:'ベトナムで計画されている南北高速鉄道について、設計最高速度として知られている数値はどれでしょう？', options:['250km/h','300km/h','350km/h','400km/h'], correct:2, time:20 },
+  { q:'ベトナムの通貨単位「Đồng」のもともとの意味に最も近いものはどれでしょう？', options:['金','銀','銅','米'], correct:2, time:20 },
+  { q:'ベトナム国旗の黄色い星が象徴するとされる5つの階層に、一般的に含まれないものはどれでしょう？', options:['労働者','農民','兵士','商人'], correct:3, time:20 },
+  { q:'かつて「サイゴン」と呼ばれていた、ベトナム最大級の都市はどこでしょう？', options:['ハノイ','ダナン','ホーチミン市','フエ'], correct:2, time:20 },
+  { q:'ベトナム語で「ありがとう」を意味する表現はどれでしょう？', options:['Xin chào','Cảm ơn','Tạm biệt','Không sao'], correct:1, time:20 }
+];
+
+const app = document.getElementById('app');
+let role = null, roomId = null, baseTopic = null, client = null, chart = null, timer = null;
+
+let host = {
+  phase:'home', players:{}, questionIndex:-1, answers:{}, remaining:20, result:null, connected:false, log:''
+};
+
+let player = loadPlayer();
+
+function loadPlayer(){
+  const saved = JSON.parse(localStorage.getItem('asicsQuizPlayer') || '{}');
+  const id = saved.id || (crypto.randomUUID ? crypto.randomUUID() : 'p_' + Math.random().toString(36).slice(2));
+  const p = { id, name:saved.name || '', score:saved.score || 0, wrong:saved.wrong || 0, eliminated:!!saved.eliminated, selected:null, locked:false, joined:false, lastQuestionIndex:-1, connected:false };
+  localStorage.setItem('asicsQuizPlayer', JSON.stringify({id:p.id,name:p.name,score:p.score,wrong:p.wrong,eliminated:p.eliminated}));
+  return p;
+}
+function savePlayer(){ localStorage.setItem('asicsQuizPlayer', JSON.stringify({id:player.id,name:player.name,score:player.score,wrong:player.wrong,eliminated:player.eliminated})); }
+function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
+function icon(name, cls='w-6 h-6'){ const map={
+  monitor:'<path d="M3 5h18v11H3z"/><path d="M8 21h8"/><path d="M12 16v5"/>', phone:'<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>', users:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>', play:'<polygon points="6 3 20 12 6 21 6 3"/>', timer:'<circle cx="12" cy="13" r="8"/><path d="M12 9v5l3 2"/><path d="M9 2h6"/>', trophy:'<path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 4h10v7a5 5 0 0 1-10 0V4z"/><path d="M5 5H3v3a4 4 0 0 0 4 4"/><path d="M19 5h2v3a4 4 0 0 1-4 4"/>', skull:'<path d="M12 2a8 8 0 0 0-8 8c0 3 2 5 4 6v4h8v-4c2-1 4-3 4-6a8 8 0 0 0-8-8z"/><circle cx="9" cy="10" r="1"/><circle cx="15" cy="10" r="1"/><path d="M10 15h4"/>', check:'<path d="M20 6 9 17l-5-5"/>', x:'<path d="M18 6 6 18"/><path d="m6 6 12 12"/>', wifi:'<path d="M5 13a10 10 0 0 1 14 0"/><path d="M8.5 16.5a5 5 0 0 1 7 0"/><path d="M12 20h.01"/>', off:'<path d="m2 2 20 20"/><path d="M8.5 16.5a5 5 0 0 1 7 0"/><path d="M5 13a10 10 0 0 1 5.2-2.7"/><path d="M19 13a10 10 0 0 0-5.2-2.7"/>', qrcode:'<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h2v2h-2zM18 14h3v3M14 18h3v3M19 19h2v2"/>', rotate:'<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/>'};
+  return `<span class="icon inline-block ${cls}"><svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">${map[name]||''}</svg></span>`;
+}
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.remove('hidden'); clearTimeout(toast._id); toast._id=setTimeout(()=>t.classList.add('hidden'),1800); }
+function makeRoom(){ const c='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; return Array.from({length:5},()=>c[Math.floor(Math.random()*c.length)]).join(''); }
+function publish(topic,payload){ if(client && client.connected) client.publish(topic, JSON.stringify(payload)); }
+function alivePlayers(){ return Object.values(host.players).filter(p=>!p.eliminated); }
+function allPlayers(){ return Object.values(host.players); }
+function ranking(){ return allPlayers().sort((a,b)=>b.score-a.score||a.wrong-b.wrong).slice(0,5); }
+function joinUrl(){ const u=new URL(location.href); u.search=''; u.searchParams.set('room',roomId); return u.toString(); }
+
+window.addEventListener('load',()=>{
+  const p = new URLSearchParams(location.search);
+  if(p.get('room')){ role='player'; roomId=p.get('room').toUpperCase(); baseTopic=`${TOPIC_PREFIX}/${roomId}`; renderPlayerLogin(); }
+  else renderHome();
+});
+
+function mqttConnect(onReady){
+  if(!window.mqtt){ toast('MQTTライブラリを読み込めませんでした。ネットワークをご確認ください。'); return; }
+  if(client && client.connected){ onReady&&onReady(); return; }
+  client = mqtt.connect(BROKER_URL,{clientId:`asics_${role}_${Math.random().toString(36).slice(2,9)}`,clean:true,reconnectPeriod:2000,connectTimeout:8000});
+  client.on('connect',()=>{ if(role==='host') host.connected=true; if(role==='player') player.connected=true; onReady&&onReady(); renderCurrent(); });
+  client.on('reconnect',()=>{ if(role==='host') host.connected=false; if(role==='player') player.connected=false; renderCurrent(); });
+  client.on('close',()=>{ if(role==='host') host.connected=false; if(role==='player') player.connected=false; renderCurrent(); });
+  client.on('message',(topic,msg)=>{ let data; try{data=JSON.parse(msg.toString())}catch{return} role==='host'?handleHost(data):handlePlayer(data); });
+}
+
+function renderHome(){
+  app.innerHTML = `<main class="min-h-screen flex items-center justify-center p-5 speed-bg"><section class="glass rounded-[2rem] p-8 md:p-12 text-center w-full max-w-3xl fade">
+    <img src="${ASICS_LOGO}" class="mx-auto w-56 md:w-72 bg-white rounded-2xl px-8 py-5 mb-8" alt="ASICS">
+    <p class="text-yellow-300 font-black tracking-widest mb-3">ASICS x VIETNAM</p><h1 class="text-4xl md:text-6xl font-black mb-4">懇親会クイズ大会</h1>
+    <p class="text-blue-100 mb-10">ホストは大画面で進行し、参加者はスマートフォンから回答します。</p>
+    <div class="grid md:grid-cols-2 gap-5"><button onclick="startHost()" class="btn rounded-3xl bg-white text-[#001E62] p-8 font-black text-2xl shadow-2xl">${icon('monitor','w-12 h-12')}<br>ホスト<br><span class="text-base">進行役</span></button><button onclick="manualRoom()" class="btn rounded-3xl bg-yellow-300 text-[#001E62] p-8 font-black text-2xl shadow-2xl">${icon('phone','w-12 h-12')}<br>参加者<br><span class="text-base">Room IDを入力</span></button></div>
+  </section></main>`;
+}
+function manualRoom(){ app.innerHTML=`<main class="min-h-screen flex items-center justify-center p-5 speed-bg"><section class="glass rounded-[2rem] p-7 text-center w-full max-w-md fade"><img src="${ASICS_LOGO}" class="mx-auto w-44 bg-white rounded-2xl px-6 py-4 mb-6"><h1 class="text-3xl font-black mb-3">Room IDを入力</h1><p class="text-blue-100 mb-6">ホスト画面に表示されている5桁のIDを入力してください。</p><input id="manualRoom" maxlength="5" class="w-full text-center text-3xl tracking-[.3em] uppercase rounded-2xl p-5 text-[#001E62] font-black outline-none mb-5" placeholder="A7K29"><button onclick="goManualRoom()" class="btn w-full rounded-2xl bg-yellow-300 text-[#001E62] py-5 font-black text-xl">入室する</button><button onclick="renderHome()" class="mt-5 underline text-blue-100">戻る</button></section></main>`; }
+function goManualRoom(){ const v=document.getElementById('manualRoom').value.trim().toUpperCase(); if(v.length!==5){alert('5桁のRoom IDを入力してください。');return} location.href=`${location.pathname}?room=${encodeURIComponent(v)}`; }
+
+function startHost(){ role='host'; roomId=makeRoom(); baseTopic=`${TOPIC_PREFIX}/${roomId}`; host={phase:'lobby',players:{},questionIndex:-1,answers:{},remaining:20,result:null,connected:false}; mqttConnect(()=>{client.subscribe(`${baseTopic}/player`); renderHostLobby(); broadcast();}); }
+function handleHost(data){
+  if(data.type==='join'){
+    const name=String(data.name||'ゲスト').slice(0,10);
+    const old=host.players[data.id]||{};
+    host.players[data.id]={id:data.id,name,score:old.score||0,wrong:old.wrong||0,eliminated:!!old.eliminated,lastCorrect:old.lastCorrect??null,lastAnswer:old.lastAnswer??null};
+    renderCurrent(); broadcast();
+  }
+  if(data.type==='answer'){
+    if(host.phase!=='question') return;
+    const p=host.players[data.id]; if(!p||p.eliminated) return;
+    if(host.answers[data.id]!==undefined) return;
+    host.answers[data.id]=Number(data.answer); p.lastAnswer=Number(data.answer);
+    renderHostQuestion(); broadcast(false);
+    if(Object.keys(host.answers).length>=alivePlayers().length) finishQuestion();
+  }
+}
+function hostPayload(){ return {type:'state',phase:host.phase,roomId,questionIndex:host.questionIndex,totalQuestions:QUESTIONS.length,question:host.phase==='question'?publicQuestion():null,result:host.result,players:host.players,aliveCount:alivePlayers().length,playerCount:allPlayers().length,ranking:ranking()}; }
+function broadcast(){ publish(`${baseTopic}/host`, hostPayload()); }
+function publicQuestion(){ const q=QUESTIONS[host.questionIndex]; return {q:q.q,options:q.options,time:q.time}; }
+function renderCurrent(){ if(role==='host'){ if(host.phase==='lobby')renderHostLobby(); else if(host.phase==='question')renderHostQuestion(); else if(host.phase==='result')renderHostResult(); else if(host.phase==='final')renderHostFinal(); } else if(role==='player'){ if(!player.joined) return; renderPlayerWaiting('ホストの操作を待っています。'); } }
+function hostShell(content){ app.innerHTML=`<main class="min-h-screen p-5 md:p-8 speed-bg"><header class="flex items-center justify-between gap-4 mb-6"><div class="flex items-center gap-4"><img src="${ASICS_LOGO}" class="w-40 md:w-48 bg-white rounded-xl px-5 py-3"><div><p class="text-blue-100 font-bold tracking-widest">ASICS x VIETNAM PARTY QUIZ</p><p class="text-2xl md:text-3xl font-black">Room ID：<span class="text-yellow-300">${roomId}</span></p></div></div><div class="text-right"><div class="inline-flex items-center gap-2 rounded-full px-4 py-2 font-black ${host.connected?'bg-green-400 text-[#001E62]':'bg-red-500 text-white'}">${icon(host.connected?'wifi':'off','w-4 h-4')}${host.connected?'接続中':'再接続中'}</div><p class="mt-2 text-blue-100 font-bold">参加者 ${allPlayers().length}名</p></div></header>${content}</main>`; }
+function renderHostLobby(){ host.phase='lobby'; const url=joinUrl(); hostShell(`<section class="grid lg:grid-cols-[430px_1fr] gap-8 fade"><div class="glass rounded-[2rem] p-8 text-center"><h1 class="text-4xl font-black mb-5">参加受付中</h1><div id="qrcode" class="qr-box bg-white rounded-[2rem] p-6 inline-block mb-5 min-w-[320px] min-h-[320px] flex items-center justify-center">${icon('qrcode','w-32 h-32 text-[#001E62]')}</div><p class="text-blue-100 break-all text-sm mb-4">${esc(url)}</p><div class="rounded-3xl bg-white/10 p-5 mb-6"><p class="text-blue-100 font-bold">現在の参加者数</p><p class="text-7xl font-black text-yellow-300">${allPlayers().length}</p></div><button onclick="startGame()" class="btn pulse w-full rounded-3xl bg-yellow-300 text-[#001E62] py-6 font-black text-3xl">${icon('play','w-8 h-8')} ゲーム開始</button></div><div class="glass rounded-[2rem] p-8"><h2 class="text-3xl font-black mb-5">参加者リスト</h2><div class="grid md:grid-cols-2 xl:grid-cols-3 gap-4">${allPlayers().length?allPlayers().map(p=>`<div class="rounded-2xl bg-white/10 p-4 font-bold flex justify-between"><span>${esc(p.name)}</span><span class="${p.eliminated?'text-red-300':'text-green-300'}">${p.eliminated?'脱落':'待機中'}</span></div>`).join(''):'<p class="text-blue-100 text-xl">QRコードを読み取って入室してください。</p>'}</div></div></section>`); setTimeout(()=>{ const el=document.getElementById('qrcode'); if(el && window.QRCode){el.innerHTML=''; new QRCode(el,{text:url,width:320,height:320,colorDark:'#001E62',colorLight:'#fff',correctLevel:QRCode.CorrectLevel.H});}},0); }
+function startGame(){ if(allPlayers().length===0){alert('参加者がまだ入室していません。');return} nextQuestion(); }
+function nextQuestion(){ if(host.questionIndex>=QUESTIONS.length-1){host.phase='final';clearInterval(timer);renderHostFinal();broadcast();return} host.questionIndex++; host.phase='question'; host.answers={}; host.result=null; host.remaining=QUESTIONS[host.questionIndex].time; Object.values(host.players).forEach(p=>{p.lastCorrect=null;p.lastAnswer=null}); renderHostQuestion(); broadcast(); startTimer(); }
+function startTimer(){ clearInterval(timer); timer=setInterval(()=>{host.remaining--; renderHostQuestion(); if(host.remaining<=0) finishQuestion();},1000); }
+function renderHostQuestion(){ const q=QUESTIONS[host.questionIndex]; const answered=Object.keys(host.answers).length; const alive=alivePlayers().length; hostShell(`<section class="glass rounded-[2rem] p-8 fade"><div class="flex justify-between gap-5 mb-5"><div><p class="text-yellow-300 font-black text-2xl">第 ${host.questionIndex+1} 問 / ${QUESTIONS.length}</p><div class="w-80 max-w-full h-3 bg-white/20 rounded-full mt-3"><div class="h-full bg-yellow-300 rounded-full" style="width:${(host.questionIndex+1)/QUESTIONS.length*100}%"></div></div></div><div class="text-center rounded-[2rem] ${host.remaining<=5?'bg-red-500 text-white':'bg-white text-[#001E62]'} px-10 py-5"><p class="font-bold">残り時間</p><p class="text-6xl font-black">${host.remaining}</p></div></div><div class="h-4 bg-white/20 rounded-full mb-8 overflow-hidden"><div class="h-full ${host.remaining<=5?'bg-red-500':'bg-yellow-300'}" style="width:${Math.max(0,host.remaining/q.time*100)}%"></div></div><h1 class="text-4xl md:text-6xl font-black leading-tight mb-10">${esc(q.q)}</h1><div class="grid md:grid-cols-2 gap-5 mb-8">${q.options.map((op,i)=>`<div class="rounded-3xl bg-white text-[#001E62] p-7 text-2xl md:text-3xl font-black flex items-center gap-5"><span class="rounded-full bg-[#001E62] text-white w-14 h-14 flex items-center justify-center shrink-0">${String.fromCharCode(65+i)}</span><span>${esc(op)}</span></div>`).join('')}</div><div class="rounded-3xl bg-white/10 p-6 flex justify-between items-center"><p class="text-2xl font-black">回答状況</p><p class="text-4xl font-black text-yellow-300">${answered} / ${alive}</p></div></section>`); }
+function finishQuestion(){ if(host.phase!=='question') return; clearInterval(timer); const q=QUESTIONS[host.questionIndex]; const counts=[0,0,0,0]; Object.values(host.answers).forEach(a=>{ if(a>=0&&a<=3) counts[a]++; }); Object.values(host.players).forEach(p=>{ if(p.eliminated) return; const ans=host.answers[p.id]; const ok=ans===q.correct; p.lastAnswer=ans??null; p.lastCorrect=ok; if(ok)p.score+=100; else{p.wrong++; if(p.wrong>=MAX_WRONG)p.eliminated=true;} }); host.phase='result'; host.result={questionIndex:host.questionIndex,questionText:q.q,options:q.options,correct:q.correct,correctText:q.options[q.correct],counts}; renderHostResult(); broadcast(); }
+function renderHostResult(){ const r=host.result; hostShell(`<section class="grid lg:grid-cols-[1.2fr_.8fr] gap-8 fade"><div class="glass rounded-[2rem] p-8"><p class="text-yellow-300 font-black text-2xl mb-2">結果発表</p><h1 class="text-3xl md:text-4xl font-black mb-6">${esc(r.questionText)}</h1><div class="bg-white rounded-[2rem] p-6"><canvas id="chart" height="190"></canvas></div></div><div class="glass rounded-[2rem] p-8 flex flex-col justify-between"><div><p class="text-blue-100 font-bold text-xl mb-3">正解</p><div class="rounded-[2rem] bg-yellow-300 text-[#001E62] p-7 mb-6"><p class="text-5xl font-black">${String.fromCharCode(65+r.correct)}</p><p class="text-3xl font-black mt-2">${esc(r.correctText)}</p></div><div class="grid grid-cols-2 gap-4"><div class="rounded-2xl bg-white/10 p-5"><p class="text-blue-100 font-bold">生存者</p><p class="text-5xl font-black">${alivePlayers().length}</p></div><div class="rounded-2xl bg-white/10 p-5"><p class="text-blue-100 font-bold">脱落者</p><p class="text-5xl font-black">${allPlayers().filter(p=>p.eliminated).length}</p></div></div></div><button onclick="nextQuestion()" class="btn mt-8 w-full rounded-3xl bg-white text-[#001E62] py-6 font-black text-3xl">${host.questionIndex>=QUESTIONS.length-1?'ランキングへ':'次の問題へ'}</button></div></section>`); setTimeout(drawChart,0); }
+function drawChart(){ if(!window.Chart||!host.result) return; const c=document.getElementById('chart'); if(!c)return; if(chart)chart.destroy(); const r=host.result; chart=new Chart(c,{type:'bar',data:{labels:r.options.map((o,i)=>`${String.fromCharCode(65+i)}. ${o}`),datasets:[{label:'回答数',data:r.counts,backgroundColor:r.options.map((_,i)=>i===r.correct?'#FACC15':'#001E62'),borderRadius:12}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{precision:0}}}}}); }
+function renderHostFinal(){ hostShell(`<section class="glass rounded-[2rem] p-8 md:p-12 text-center fade"><p class="text-yellow-300 font-black tracking-widest text-2xl mb-3">FINAL RESULT</p><h1 class="text-6xl md:text-8xl font-black mb-10">ランキング</h1><div class="max-w-4xl mx-auto space-y-4 mb-10">${ranking().map((p,i)=>`<div class="rounded-[2rem] ${i===0?'rank1':'rankN'} p-6 flex items-center justify-between shadow-2xl"><div class="flex items-center gap-5"><div class="w-16 h-16 rounded-full bg-[#001E62] text-white flex items-center justify-center text-3xl font-black">${i+1}</div><div class="text-left"><p class="text-3xl font-black">${esc(p.name)}</p><p class="font-bold opacity-80">失誤 ${p.wrong} / ${MAX_WRONG} ${p.eliminated?'・脱落':'・生存'}</p></div></div><p class="text-5xl font-black">${p.score}</p></div>`).join('')}</div><button onclick="location.href=location.pathname" class="btn rounded-3xl bg-white text-[#001E62] px-12 py-5 font-black text-2xl">最初に戻る</button></section>`); }
+
+function renderPlayerLogin(){ app.innerHTML=`<main class="min-h-screen flex items-center justify-center p-5 speed-bg safe-bottom"><section class="glass rounded-[2rem] p-7 text-center w-full max-w-md fade"><img src="${ASICS_LOGO}" class="mx-auto w-44 bg-white rounded-2xl px-6 py-4 mb-6"><p class="text-yellow-300 font-black text-xl mb-1">Room ID：${esc(roomId)}</p><h1 class="text-3xl font-black mb-3">ニックネームを入力</h1><p class="text-blue-100 mb-6">10文字以内で入力してください。</p><input id="nickname" maxlength="10" value="${esc(player.name)}" class="w-full rounded-2xl p-5 text-[#001E62] font-black text-2xl text-center outline-none mb-5" placeholder="お名前"><button onclick="joinPlayer()" class="btn w-full rounded-2xl bg-yellow-300 text-[#001E62] py-5 font-black text-xl">入室する</button><p id="msg" class="mt-5 text-blue-100 text-sm"></p></section></main>`; }
+function joinPlayer(){ const name=document.getElementById('nickname').value.trim().slice(0,10); if(!name){document.getElementById('msg').textContent='ニックネームを入力してください。';return} player.name=name; player.joined=true; savePlayer(); mqttConnect(()=>{client.subscribe(`${baseTopic}/host`); publish(`${baseTopic}/player`,{type:'join',id:player.id,name:player.name}); renderPlayerWaiting('入室しました。開始までお待ちください。');}); }
+function handlePlayer(data){ if(data.type!=='state')return; const me=data.players&&data.players[player.id]; if(me){ player.score=me.score; player.wrong=me.wrong; player.eliminated=me.eliminated; savePlayer(); }
+  if(player.eliminated && data.phase!=='final'){ renderPlayerEliminated(); return; }
+  if(data.phase==='lobby') renderPlayerWaiting('入室しました。開始までお待ちください。');
+  if(data.phase==='question'){ if(player.lastQuestionIndex!==data.questionIndex){player.selected=null;player.locked=false;player.lastQuestionIndex=data.questionIndex;} renderPlayerQuestion(data); }
+  if(data.phase==='result') renderPlayerResult(data,me);
+  if(data.phase==='final') renderPlayerFinal(data);
+}
+function playerShell(content, danger=false){ app.innerHTML=`<main class="min-h-screen p-5 speed-bg safe-bottom ${danger?'!bg-red-900':''}"><header class="flex items-center justify-between mb-5"><img src="${ASICS_LOGO}" class="w-32 bg-white rounded-xl px-4 py-3"><div class="text-right"><div class="inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-black ${player.connected?'bg-green-400 text-[#001E62]':'bg-red-500 text-white'}">${icon(player.connected?'wifi':'off','w-3 h-3')}${player.connected?'接続中':'再接続中'}</div><p class="text-yellow-300 font-black mt-1">${esc(roomId)}</p></div></header>${content}</main>`; }
+function renderPlayerWaiting(msg){ playerShell(`<section class="glass rounded-[2rem] p-8 text-center fade min-h-[70vh] flex flex-col justify-center"><div class="text-yellow-300 mx-auto mb-6">${icon('phone','w-20 h-20')}</div><h1 class="text-3xl font-black mb-4">待機中</h1><p class="text-blue-100 text-lg">${esc(msg)}</p><div class="mt-8 rounded-2xl bg-white/10 p-5"><p class="text-blue-100 font-bold">あなたの名前</p><p class="text-3xl font-black">${esc(player.name)}</p></div></section>`); }
+function renderPlayerQuestion(data){ const q=data.question; playerShell(`<section class="fade"><div class="glass rounded-[2rem] p-6 mb-5"><p class="text-yellow-300 font-black mb-2">第 ${data.questionIndex+1} 問 / ${data.totalQuestions}</p><h1 class="text-2xl font-black leading-snug">${esc(q.q)}</h1></div><div class="space-y-4">${q.options.map((op,i)=>`<button ${player.locked?'disabled':''} onclick="sendAnswer(${i})" class="opt btn w-full rounded-3xl p-5 text-left font-black text-xl shadow-2xl ${player.selected===i?'bg-yellow-300 text-[#001E62]':'bg-white text-[#001E62]'} ${player.locked&&player.selected!==i?'opacity-45':''}"><div class="flex items-center gap-4"><span class="shrink-0 w-12 h-12 rounded-full bg-[#001E62] text-white flex items-center justify-center">${String.fromCharCode(65+i)}</span><span>${esc(op)}</span></div></button>`).join('')}</div><div class="mt-5 glass rounded-2xl p-5 text-center"><p class="${player.locked?'text-yellow-300':'text-blue-100'} font-black">${player.locked?'送信しました。大画面をご覧ください。':'答えを1つ選んでください。'}</p><p class="mt-2 text-sm text-blue-100">現在の失誤：${player.wrong} / ${MAX_WRONG}</p></div></section>`); }
+function sendAnswer(i){ if(player.locked||player.eliminated)return; player.selected=i; player.locked=true; publish(`${baseTopic}/player`,{type:'answer',id:player.id,answer:i}); renderPlayerQuestion({questionIndex:player.lastQuestionIndex,totalQuestions:QUESTIONS.length,question:{q:document.querySelector('h1')?.textContent||'',options:QUESTIONS[player.lastQuestionIndex]?.options||[]}}); toast('送信しました。'); }
+function renderPlayerResult(data,me){ const r=data.result; const ok=me&&me.lastCorrect===true; playerShell(`<section class="glass rounded-[2rem] p-8 text-center fade min-h-[75vh] flex flex-col justify-center">${ok?`<div class="text-green-300 mx-auto mb-6">${icon('check','w-24 h-24')}</div><h1 class="text-5xl font-black text-green-300 mb-4">正解です！</h1>`:`<div class="text-red-300 mx-auto mb-6">${icon('x','w-24 h-24')}</div><h1 class="text-5xl font-black text-red-300 mb-4">残念、不正解です</h1>`}<div class="rounded-3xl bg-white text-[#001E62] p-6 mb-5"><p class="font-bold mb-2">正解</p><p class="text-3xl font-black">${String.fromCharCode(65+r.correct)}. ${esc(r.correctText)}</p></div><div class="rounded-3xl bg-white/10 p-5"><p class="text-blue-100 font-bold">あなたの失誤</p><p class="text-5xl font-black ${player.wrong>=4?'text-red-300':'text-yellow-300'}">${player.wrong} / ${MAX_WRONG}</p></div><p class="mt-6 text-blue-100">次の問題までお待ちください。</p></section>`); }
+function renderPlayerEliminated(){ playerShell(`<section class="rounded-[2rem] bg-red-700/90 border border-red-300 p-8 text-center fade min-h-[78vh] flex flex-col items-center justify-center"><div class="mb-6">${icon('skull','w-32 h-32')}</div><h1 class="text-6xl font-black mb-4">脱落</h1><p class="text-xl font-bold mb-6">失誤が${MAX_WRONG}回に達しました。</p><div class="rounded-3xl bg-white text-red-700 p-6 w-full"><p class="font-bold">最終スコア</p><p class="text-5xl font-black">${player.score}</p></div><p class="mt-6 text-red-100">以降の問題には回答できません。大画面をご覧ください。</p></section>`,true); }
+function renderPlayerFinal(data){ const rk=data.ranking||[]; playerShell(`<section class="glass rounded-[2rem] p-7 text-center fade"><div class="text-yellow-300 mx-auto mb-5">${icon('trophy','w-24 h-24')}</div><h1 class="text-4xl font-black mb-6">お疲れさまでした！</h1><div class="rounded-3xl bg-white text-[#001E62] p-6 mb-6"><p class="font-bold">あなたのスコア</p><p class="text-6xl font-black">${player.score}</p><p class="font-bold mt-2">失誤 ${player.wrong} / ${MAX_WRONG}</p></div><h2 class="text-2xl font-black mb-4">TOP 5</h2><div class="space-y-3">${rk.map((p,i)=>`<div class="rounded-2xl bg-white/10 p-4 flex justify-between items-center"><div class="text-left"><p class="font-black">${i+1}. ${esc(p.name)}</p><p class="text-xs text-blue-100">${p.eliminated?'脱落':'生存'}・失誤 ${p.wrong}/${MAX_WRONG}</p></div><p class="text-2xl font-black text-yellow-300">${p.score}</p></div>`).join('')}</div></section>`); }
+</script>
+</body>
+</html>
